@@ -2,8 +2,9 @@ import os
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 from datetime import datetime
+import requests
 
 from database import create_document, get_documents
 from schemas import SongRequest, Song
@@ -176,6 +177,104 @@ async def list_songs(limit: int = 20):
     except Exception:
         # If DB not available, return empty list gracefully
         return []
+
+# --- Suno integration for MP3 generation ---
+
+class AudioResponse(BaseModel):
+    title: str
+    lyrics: List[str]
+    audio_url: Optional[str] = None
+    detail: Optional[str] = None
+
+
+def generate_audio_with_suno(lyrics: List[str], style: str, language: str, tempo: str) -> str:
+    """
+    Call Suno API to generate an MP3 and return a public audio URL.
+    This uses environment variables:
+      - SUNO_API_KEY (required)
+      - SUNO_API_URL (optional, defaults to a plausible endpoint)
+    Notes: If the external service is unreachable or returns an error, raise HTTPException.
+    """
+    api_key = os.getenv("SUNO_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=501, detail="Suno API key not configured")
+
+    api_url = os.getenv("SUNO_API_URL", "https://api.suno.ai/generate")
+
+    prompt = "\n".join(lyrics)
+    payload = {
+        "prompt": prompt,
+        "style": style,
+        "language": language,
+        "tempo": tempo,
+        "format": "mp3",
+    }
+
+    try:
+        resp = requests.post(
+            api_url,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=60,
+        )
+    except requests.RequestException as e:
+        raise HTTPException(status_code=502, detail=f"Suno API request failed: {e}")
+
+    if resp.status_code >= 400:
+        # Try to surface server error
+        msg = resp.text[:300]
+        raise HTTPException(status_code=502, detail=f"Suno API error: {msg}")
+
+    try:
+        data = resp.json()
+    except ValueError:
+        raise HTTPException(status_code=502, detail="Invalid response from Suno API (not JSON)")
+
+    # Expect an audio URL field; adapt if API differs
+    audio_url = (
+        data.get("audio_url")
+        or data.get("url")
+        or (data.get("data") or {}).get("audio_url")
+    )
+    if not audio_url:
+        raise HTTPException(status_code=502, detail="Suno API response missing audio URL")
+
+    return audio_url
+
+
+@app.post("/api/songs/audio", response_model=AudioResponse)
+async def create_song_with_audio(req: SongRequest):
+    title = (
+        ("Geburtstagssong für " if req.language == "de" else "Birthday Song for ") + req.name
+    )
+    lyrics = generate_lyrics(req)
+
+    try:
+        audio_url = generate_audio_with_suno(lyrics, req.style, req.language, req.tempo)
+    except HTTPException as e:
+        # Return lyrics plus a detail message explaining why audio wasn't created
+        return AudioResponse(title=title, lyrics=lyrics, audio_url=None, detail=e.detail)
+
+    # Optionally store record including audio_url
+    try:
+        doc = {
+            "title": title,
+            "lyrics": lyrics,
+            "style": req.style,
+            "language": req.language,
+            "audio_url": audio_url,
+            "created_at": datetime.utcnow().isoformat(),
+            "request": req.model_dump(),
+        }
+        create_document("song", doc)
+    except Exception:
+        pass
+
+    return AudioResponse(title=title, lyrics=lyrics, audio_url=audio_url)
+
 
 if __name__ == "__main__":
     import uvicorn
