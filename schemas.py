@@ -12,7 +12,7 @@ Model name is converted to lowercase for the collection name:
 """
 
 from pydantic import BaseModel, Field
-from typing import Optional
+from typing import Optional, List, Literal
 
 # Example schemas (replace with your own):
 
@@ -38,11 +38,23 @@ class Product(BaseModel):
     category: str = Field(..., description="Product category")
     in_stock: bool = Field(True, description="Whether product is in stock")
 
-# Add your own schemas here:
-# --------------------------------------------------
+# Birthday song app schemas
 
-# Note: The Flames database viewer will automatically:
-# 1. Read these schemas from GET /schema endpoint
-# 2. Use them for document validation when creating/editing
-# 3. Handle all database operations (CRUD) directly
-# 4. You don't need to create any database endpoints!
+class SongRequest(BaseModel):
+    """User request parameters to generate a personalized birthday song"""
+    name: str = Field(..., description="Name of the person the song is for")
+    age: Optional[int] = Field(None, ge=0, le=130)
+    relation: Optional[str] = Field(None, description="Who they are to you (friend, mom, colleague, etc.)")
+    style: Literal["pop", "rock", "hiphop", "ballad"] = Field("pop")
+    language: Literal["de", "en"] = Field("de")
+    tempo: Literal["slow", "medium", "fast"] = Field("medium")
+
+class Song(BaseModel):
+    """Generated song document (metadata + lyrics). Audio can be re-generated on the fly"""
+    request: SongRequest
+    title: str
+    lyrics: List[str] = Field(..., description="Lyrics split by lines")
+    audio_seconds: float = 0.0
+    style: str
+    language: str
+    preview_note_count: int = 0
